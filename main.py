@@ -27,6 +27,9 @@ DEFAULT_PAIRS = [
     "EUR/JPY",
     "GBP/JPY",
     "EUR/GBP",
+    "XAU/USD",   # GOLD 🔥
+    "BTC/USD",   # crypto
+    "ETH/USD"
 ]
 
 

@@ -1,0 +1,63 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "RIGA FX Twelve Data Backend",
+    "version": "1.0.0",
+    "description": "Personal GPT Action API for RIGA FX forex signals using Twelve Data live candles. Signal-only backend; no order placement."
+  },
+  "servers": [
+    {
+      "url": "https://YOUR-RENDER-APP.onrender.com"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "checkHealth",
+        "summary": "Check backend health",
+        "responses": {"200": {"description": "OK"}}
+      }
+    },
+    "/fx-candles": {
+      "get": {
+        "operationId": "getFxCandles",
+        "summary": "Get forex candles from Twelve Data",
+        "parameters": [
+          {"name": "symbol", "in": "query", "required": true, "schema": {"type": "string"}, "description": "Forex pair like EUR/USD or EURUSD"},
+          {"name": "interval", "in": "query", "required": false, "schema": {"type": "string", "default": "5min"}},
+          {"name": "outputsize", "in": "query", "required": false, "schema": {"type": "integer", "default": 50}}
+        ],
+        "responses": {"200": {"description": "Forex candles"}}
+      }
+    },
+    "/fx-signal": {
+      "get": {
+        "operationId": "getFxSignal",
+        "summary": "Get RIGA FX signal for one forex pair",
+        "parameters": [
+          {"name": "symbol", "in": "query", "required": true, "schema": {"type": "string"}, "description": "Forex pair like EUR/USD or EURUSD"},
+          {"name": "interval", "in": "query", "required": false, "schema": {"type": "string", "default": "5min"}}
+        ],
+        "responses": {"200": {"description": "RIGA FX signal"}}
+      }
+    },
+    "/fx-scan": {
+      "get": {
+        "operationId": "scanFxMarket",
+        "summary": "Scan forex pairs and return best RIGA FX trades",
+        "parameters": [
+          {"name": "pairs", "in": "query", "required": false, "schema": {"type": "string"}, "description": "Comma-separated pairs, e.g. EUR/USD,GBP/USD,USD/JPY"},
+          {"name": "interval", "in": "query", "required": false, "schema": {"type": "string", "default": "5min"}}
+        ],
+        "responses": {"200": {"description": "RIGA FX scan result"}}
+      }
+    }
+  },
+  "components": {
+    "schemas": {},
+    "securitySchemes": {
+      "bearerAuth": {"type": "http", "scheme": "bearer"}
+    }
+  },
+  "security": [{"bearerAuth": []}]
+}

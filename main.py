@@ -6,7 +6,7 @@ from fastapi import FastAPI
 
 load_dotenv()
 
-app = FastAPI(title="RIGA FX Backend (Twelve + Yahoo Gold Backup)", version="2.3.0")
+app = FastAPI(title="RIGA FX Backend Final", version="2.4.0")
 
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 DEFAULT_INTERVAL = "5min"
@@ -18,7 +18,7 @@ DEFAULT_PAIRS = [
 ]
 
 YAHOO_SYMBOLS = {
-    "XAU/USD": ["GC=F", "XAUUSD=X"],
+    "XAU/USD": ["GC=F", "MGC=F", "XAUUSD=X"],
     "BTC/USD": ["BTC-USD"],
     "ETH/USD": ["ETH-USD"],
     "EUR/USD": ["EURUSD=X"],
@@ -93,53 +93,83 @@ def fetch_yahoo(symbol: str):
 
         except Exception as e:
             last_error = e
-            print(f"Yahoo failed for {yahoo_symbol}:", e)
+            print(f"Yahoo failed for {yahoo_symbol}: {e}")
 
     raise Exception(f"All Yahoo symbols failed for {symbol}: {last_error}")
 
 
-def fetch_data(symbol: str):
-    try:
-        if not TWELVEDATA_API_KEY:
-            raise Exception("No TwelveData API key")
+def fetch_twelvedata(symbol: str):
+    if not TWELVEDATA_API_KEY:
+        raise Exception("No TwelveData API key")
 
-        url = "https://api.twelvedata.com/time_series"
-        params = {
-            "symbol": normalize_symbol(symbol),
-            "interval": DEFAULT_INTERVAL,
-            "outputsize": 120,
-            "apikey": TWELVEDATA_API_KEY,
+    url = "https://api.twelvedata.com/time_series"
+    params = {
+        "symbol": normalize_symbol(symbol),
+        "interval": DEFAULT_INTERVAL,
+        "outputsize": 120,
+        "apikey": TWELVEDATA_API_KEY,
+    }
+
+    r = requests.get(url, params=params, timeout=15)
+    data = r.json()
+
+    if r.status_code != 200 or "values" not in data:
+        raise Exception(f"TwelveData failed: {data}")
+
+    candles = []
+
+    for row in reversed(data["values"]):
+        candle = {
+            "open": safe_float(row["open"]),
+            "high": safe_float(row["high"]),
+            "low": safe_float(row["low"]),
+            "close": safe_float(row["close"]),
         }
 
-        r = requests.get(url, params=params, timeout=15)
-        data = r.json()
+        if None not in candle.values():
+            candles.append(candle)
 
-        if r.status_code == 200 and "values" in data:
-            candles = []
+    if len(candles) < 40:
+        raise Exception("TwelveData not enough candles")
 
-            for row in reversed(data["values"]):
-                candle = {
-                    "open": safe_float(row["open"]),
-                    "high": safe_float(row["high"]),
-                    "low": safe_float(row["low"]),
-                    "close": safe_float(row["close"]),
-                }
+    closes = [c["close"] for c in candles]
 
-                if None not in candle.values():
-                    candles.append(candle)
+    # Weak / flat data rejection
+    if max(closes) - min(closes) <= 0.5 and normalize_symbol(symbol) == "XAU/USD":
+        raise Exception("TwelveData weak Gold data")
 
-            if len(candles) >= 40:
-                return "TwelveData", candles
+    return candles
 
-        print("TwelveData failed:", data)
 
+def fetch_data(symbol: str):
+    symbol = normalize_symbol(symbol)
+
+    # GOLD: Yahoo first because TwelveData sometimes gives weak/incomplete Gold data
+    if symbol == "XAU/USD":
+        try:
+            yahoo_symbol, candles = fetch_yahoo(symbol)
+            return f"Yahoo Finance ({yahoo_symbol})", candles
+        except Exception as e:
+            print("Gold Yahoo error:", e)
+
+        try:
+            candles = fetch_twelvedata(symbol)
+            return "TwelveData", candles
+        except Exception as e:
+            print("Gold TwelveData error:", e)
+
+        raise Exception("All Gold data sources failed")
+
+    # Other markets: TwelveData first, Yahoo backup
+    try:
+        candles = fetch_twelvedata(symbol)
+        return "TwelveData", candles
     except Exception as e:
         print("TwelveData error:", e)
 
     try:
         yahoo_symbol, candles = fetch_yahoo(symbol)
         return f"Yahoo Finance ({yahoo_symbol})", candles
-
     except Exception as e:
         print("Yahoo error:", e)
 
@@ -252,7 +282,7 @@ def analyze(symbol, candles):
 
 @app.get("/")
 def root():
-    return {"status": "RIGA FX running", "version": "2.3.0"}
+    return {"status": "RIGA FX running", "version": "2.4.0"}
 
 
 @app.get("/health")

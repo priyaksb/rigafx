@@ -1,5 +1,5 @@
 # ===============================
-# RIGA FX PRO BACKEND (FINAL FIXED)
+# RIGA FX PRO BACKEND (RELAX LOGIC FINAL)
 # ===============================
 
 import os
@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 load_dotenv()
 
-app = FastAPI(title="RIGA FX PRO", version="3.0.0")
+app = FastAPI(title="RIGA FX PRO", version="3.5.0")
 
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 DEFAULT_INTERVAL = "5min"
@@ -105,8 +105,8 @@ def rsi(data, p=14):
         gains.append(max(diff,0))
         losses.append(abs(min(diff,0)))
 
-    avg_gain = sum(gains[-p:])/p
-    avg_loss = sum(losses[-p:])/p
+    avg_gain = sum(gains[-p:])/p if len(gains)>=p else 0
+    avg_loss = sum(losses[-p:])/p if len(losses)>=p else 1
 
     if avg_loss == 0:
         return 100
@@ -133,22 +133,8 @@ def detect_candle(c):
 
     return "weak","weak"
 
-
-def detect_pattern(closes):
-    high = max(closes[-20:])
-    low = min(closes[-20:])
-    last = closes[-1]
-
-    if last > high:
-        return "breakout", True
-
-    if last < low:
-        return "breakdown", True
-
-    return "range", False
-
 # ===============================
-# ANALYSIS ENGINE
+# ANALYSIS ENGINE (RELAX LOGIC)
 # ===============================
 
 def analyze(symbol, candles):
@@ -170,15 +156,14 @@ def analyze(symbol, candles):
     mid = (recent_high + recent_low) / 2
     range_size = recent_high - recent_low
 
-    # MID FILTER
-    if abs(last-mid) < range_size*0.2:
+    # MID FILTER (sideways avoid)
+    if abs(last-mid) < range_size*0.15:
         return {"market":symbol,"signal":"NO TRADE"}
 
-    pattern, valid = detect_pattern(closes)
     candle, quality = detect_candle(candles[-1])
 
-    # SELL
-    if trend=="bearish" and valid and r<45 and last>mid:
+    # 🔥 RELAX LOGIC SELL
+    if trend=="bearish" and r<50 and last>mid and quality=="strong":
         sl = recent_high
         tp = last - (sl-last)*2
 
@@ -188,14 +173,14 @@ def analyze(symbol, candles):
             "entry":round(last,2),
             "sl":round(sl,2),
             "tp":round(tp,2),
-            "confidence":80,
-            "pattern":pattern,
+            "confidence":75,
+            "pattern":"trend continuation",
             "candle":candle,
             "rr":"1:2"
         }
 
-    # BUY
-    if trend=="bullish" and valid and r>55 and last<mid:
+    # 🔥 RELAX LOGIC BUY
+    if trend=="bullish" and r>50 and last<mid and quality=="strong":
         sl = recent_low
         tp = last + (last-sl)*2
 
@@ -205,8 +190,8 @@ def analyze(symbol, candles):
             "entry":round(last,2),
             "sl":round(sl,2),
             "tp":round(tp,2),
-            "confidence":80,
-            "pattern":pattern,
+            "confidence":75,
+            "pattern":"trend continuation",
             "candle":candle,
             "rr":"1:2"
         }

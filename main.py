@@ -7,75 +7,59 @@ from typing import Optional
 
 load_dotenv()
 
-app = FastAPI(title="RIGA FX v7 FINAL SNIPER", version="7.2")
+app = FastAPI(title="RIGA FX PRO", version="1.0")
 
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
-DEFAULT_INTERVAL = os.getenv("DEFAULT_INTERVAL", "5min")
 MIN_CONFIDENCE = int(os.getenv("MIN_CONFIDENCE", "60"))
+INTERVAL = "5min"
 
-DEFAULT_PAIRS = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
-    "AUD/USD", "NZD/USD", "USD/CAD",
-    "EUR/JPY", "GBP/JPY", "EUR/GBP",
-    "XAU/USD"
-]
+PAIRS = ["XAU/USD", "EUR/USD", "GBP/USD", "USD/JPY"]
 
-YAHOO_SYMBOLS = {
+YAHOO = {
     "XAU/USD": ["GC=F", "MGC=F"],
     "EUR/USD": ["EURUSD=X"],
     "GBP/USD": ["GBPUSD=X"],
-    "USD/JPY": ["JPY=X"],
-    "USD/CHF": ["CHF=X"],
-    "AUD/USD": ["AUDUSD=X"],
-    "NZD/USD": ["NZDUSD=X"],
-    "USD/CAD": ["CAD=X"],
-    "EUR/JPY": ["EURJPY=X"],
-    "GBP/JPY": ["GBPJPY=X"],
-    "EUR/GBP": ["EURGBP=X"],
+    "USD/JPY": ["JPY=X"]
 }
 
 
-def normalize_symbol(symbol: str) -> str:
-    s = symbol.strip().upper().replace(" ", "")
+def norm(symbol: str):
+    s = symbol.upper().replace(" ", "")
     if s == "XAUUSD":
         return "XAU/USD"
     if "/" in s:
         return s
     if len(s) == 6:
-        return f"{s[:3]}/{s[3:]}"
+        return s[:3] + "/" + s[3:]
     return s
 
 
-def safe_float(v):
+def fnum(v):
     try:
         if hasattr(v, "iloc"):
             v = v.iloc[0]
         return float(v)
-    except Exception:
+    except:
         return None
 
 
-def fetch_twelvedata(symbol: str):
+def fetch_twelve(symbol):
     url = "https://api.twelvedata.com/time_series"
     params = {
-        "symbol": normalize_symbol(symbol),
-        "interval": DEFAULT_INTERVAL,
+        "symbol": norm(symbol),
+        "interval": INTERVAL,
         "outputsize": 120,
-        "apikey": TWELVEDATA_API_KEY,
+        "apikey": TWELVEDATA_API_KEY
     }
 
     data = requests.get(url, params=params, timeout=20).json()
 
     if "values" not in data:
-        raise Exception(f"TwelveData failed: {data}")
+        raise Exception(str(data))
 
     candles = []
-    for row in reversed(data["values"]):
-        o = safe_float(row.get("open"))
-        h = safe_float(row.get("high"))
-        l = safe_float(row.get("low"))
-        c = safe_float(row.get("close"))
-
+    for r in reversed(data["values"]):
+        o, h, l, c = fnum(r["open"]), fnum(r["high"]), fnum(r["low"]), fnum(r["close"])
         if None not in [o, h, l, c]:
             candles.append({"open": o, "high": h, "low": l, "close": c})
 
@@ -85,28 +69,18 @@ def fetch_twelvedata(symbol: str):
     return "TwelveData", candles
 
 
-def fetch_yahoo(symbol: str):
-    symbol = normalize_symbol(symbol)
+def fetch_yahoo(symbol):
+    symbol = norm(symbol)
 
-    for ys in YAHOO_SYMBOLS.get(symbol, []):
-        df = yf.download(
-            ys,
-            period="5d",
-            interval="5m",
-            progress=False,
-            auto_adjust=False
-        )
+    for ys in YAHOO.get(symbol, []):
+        df = yf.download(ys, period="5d", interval="5m", progress=False, auto_adjust=False)
 
         if df.empty:
             continue
 
         candles = []
         for _, r in df.tail(120).iterrows():
-            o = safe_float(r["Open"])
-            h = safe_float(r["High"])
-            l = safe_float(r["Low"])
-            c = safe_float(r["Close"])
-
+            o, h, l, c = fnum(r["Open"]), fnum(r["High"]), fnum(r["Low"]), fnum(r["Close"])
             if None not in [o, h, l, c]:
                 candles.append({"open": o, "high": h, "low": l, "close": c})
 
@@ -116,18 +90,18 @@ def fetch_yahoo(symbol: str):
     raise Exception("Yahoo failed")
 
 
-def fetch_data(symbol: str):
-    symbol = normalize_symbol(symbol)
+def fetch_data(symbol):
+    symbol = norm(symbol)
 
     if symbol == "XAU/USD":
         try:
             return fetch_yahoo(symbol)
-        except Exception:
-            return fetch_twelvedata(symbol)
+        except:
+            return fetch_twelve(symbol)
 
     try:
-        return fetch_twelvedata(symbol)
-    except Exception:
+        return fetch_twelve(symbol)
+    except:
         return fetch_yahoo(symbol)
 
 
@@ -147,9 +121,9 @@ def rsi(values, period=14):
 
     gains, losses = [], []
     for i in range(1, len(values)):
-        diff = values[i] - values[i - 1]
-        gains.append(max(diff, 0))
-        losses.append(abs(min(diff, 0)))
+        d = values[i] - values[i - 1]
+        gains.append(max(d, 0))
+        losses.append(abs(min(d, 0)))
 
     avg_gain = sum(gains[-period:]) / period
     avg_loss = sum(losses[-period:]) / period
@@ -161,239 +135,156 @@ def rsi(values, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def candle_stats(c):
-    high, low, close, open_p = c["high"], c["low"], c["close"], c["open"]
-    rng = high - low
-
+def candle_info(c):
+    rng = c["high"] - c["low"]
     if rng <= 0:
-        return None
+        return "BAD", 0, "neutral"
 
-    body = abs(close - open_p)
-    upper_wick = high - max(open_p, close)
-    lower_wick = min(open_p, close) - low
-    position = (close - low) / rng
-    momentum = ((close - open_p) / open_p) * 100 if open_p else 0
+    body = abs(c["close"] - c["open"])
     strength = body / rng
 
-    return {
-        "range": rng,
-        "body": body,
-        "upper_wick": upper_wick,
-        "lower_wick": lower_wick,
-        "position": position,
-        "momentum": momentum,
-        "strength": strength
-    }
-
-
-def candle_quality(c):
-    st = candle_stats(c)
-    if not st:
-        return "BAD", 0
-
-    strength = st["strength"]
+    direction = "bullish" if c["close"] > c["open"] else "bearish"
 
     if strength >= 0.70:
-        return "A_PLUS", strength
-    if strength >= 0.60:
-        return "A_GRADE", strength
-    if strength >= 0.45:
-        return "B_GRADE", strength
+        grade = "A_PLUS"
+    elif strength >= 0.55:
+        grade = "A_GRADE"
+    elif strength >= 0.40:
+        grade = "B_GRADE"
+    else:
+        grade = "LOW_QUALITY"
 
-    return "LOW_QUALITY", strength
-
-
-def detect_pattern(candles):
-    last = candles[-1]
-    st = candle_stats(last)
-
-    if not st:
-        return "NO_PATTERN"
-
-    pos = st["position"]
-    mom = st["momentum"]
-    strength = st["strength"]
-
-    if pos > 0.88 and mom > 0.02 and strength >= 0.60:
-        return "BULLISH_BREAKOUT"
-
-    if pos < 0.12 and mom < -0.02 and strength >= 0.60:
-        return "BEARISH_BREAKDOWN"
-
-    if pos > 0.72 and mom > 0.01 and strength >= 0.45:
-        return "BULLISH_CONTINUATION"
-
-    if pos < 0.28 and mom < -0.01 and strength >= 0.45:
-        return "BEARISH_CONTINUATION"
-
-    if pos > 0.72 and strength >= 0.50:
-        return "BULLISH_PRESSURE"
-
-    if pos < 0.28 and strength >= 0.50:
-        return "BEARISH_PRESSURE"
-
-    return "NO_PATTERN"
+    return grade, strength, direction
 
 
-def liquidity_trap_filter(c):
-    st = candle_stats(c)
-    if not st:
-        return True, "bad candle data"
+def trap_check(c):
+    rng = c["high"] - c["low"]
+    if rng <= 0:
+        return True, "bad candle"
 
-    body = st["body"]
-    upper_wick = st["upper_wick"]
-    lower_wick = st["lower_wick"]
-    pos = st["position"]
+    body = abs(c["close"] - c["open"])
+    upper = c["high"] - max(c["open"], c["close"])
+    lower = min(c["open"], c["close"]) - c["low"]
 
     if body <= 0:
-        return True, "doji/no body trap"
+        return True, "doji candle"
 
-    if upper_wick > body * 1.8 and pos < 0.70:
-        return True, "upper wick rejection trap"
+    if upper > body * 2:
+        return True, "upper wick trap"
 
-    if lower_wick > body * 1.8 and pos > 0.30:
-        return True, "lower wick rejection trap"
+    if lower > body * 2:
+        return True, "lower wick trap"
 
-    return False, "no liquidity trap"
-
-
-def retest_filter(c, pattern):
-    st = candle_stats(c)
-    if not st:
-        return False, "no retest data"
-
-    pos = st["position"]
-
-    if pattern in ["BULLISH_BREAKOUT", "BULLISH_CONTINUATION", "BULLISH_PRESSURE"] and pos >= 0.68:
-        return True, "bullish acceptance/retest approximation"
-
-    if pattern in ["BEARISH_BREAKDOWN", "BEARISH_CONTINUATION", "BEARISH_PRESSURE"] and pos <= 0.32:
-        return True, "bearish acceptance/retest approximation"
-
-    return False, "retest optional / not confirmed"
+    return False, "no trap"
 
 
-def round_price(symbol, price):
-    symbol = normalize_symbol(symbol)
+def round_price(symbol, value):
+    symbol = norm(symbol)
     if symbol == "XAU/USD":
-        return round(price, 2)
+        return round(value, 2)
     if "JPY" in symbol:
-        return round(price, 3)
-    return round(price, 5)
+        return round(value, 3)
+    return round(value, 5)
 
 
-def riga_fx_logic(symbol, candles):
-    symbol = normalize_symbol(symbol)
-
-    if len(candles) < 40:
-        return {"market": symbol, "signal": "NO TRADE", "confidence": 0, "reason": "Not enough candles"}
+def analyze(symbol, candles):
+    symbol = norm(symbol)
 
     closes = [c["close"] for c in candles]
     highs = [c["high"] for c in candles]
     lows = [c["low"] for c in candles]
+
     last_candle = candles[-1]
     last = closes[-1]
 
     e9 = ema(closes, 9)
     e21 = ema(closes, 21)
-    rsi14 = rsi(closes, 14)
+    r = rsi(closes)
 
-    if e9 is None or e21 is None or rsi14 is None:
-        return {"market": symbol, "signal": "NO TRADE", "confidence": 0, "reason": "Indicator incomplete"}
+    if e9 is None or e21 is None or r is None:
+        return {"market": symbol, "signal": "NO TRADE", "confidence": 0, "reason": "indicator incomplete"}
+
+    trend = "BULLISH" if e9 > e21 else "BEARISH"
 
     recent_high = max(highs[-30:])
     recent_low = min(lows[-30:])
     range_size = recent_high - recent_low
 
     if range_size <= 0:
-        return {"market": symbol, "signal": "NO TRADE", "confidence": 0, "reason": "Invalid range"}
+        return {"market": symbol, "signal": "NO TRADE", "confidence": 0, "reason": "invalid range"}
 
     zone = (last - recent_low) / range_size
-    trend = "BULLISH" if e9 > e21 else "BEARISH"
+
     phase = "RANGE" if 0.35 < zone < 0.65 else "EDGE"
 
-    pattern = detect_pattern(candles)
-    candle, strength = candle_quality(last_candle)
-    trap, trap_reason = liquidity_trap_filter(last_candle)
-    retest, retest_reason = retest_filter(last_candle, pattern)
+    candle, strength, candle_dir = candle_info(last_candle)
+    trap, trap_reason = trap_check(last_candle)
 
     buy_score = 0
     sell_score = 0
-    buy_reasons = []
-    sell_reasons = []
+    buy_reason = []
+    sell_reason = []
 
     if trend == "BULLISH":
         buy_score += 20
-        buy_reasons.append("EMA bullish trend")
+        buy_reason.append("EMA bullish trend")
     else:
         sell_score += 20
-        sell_reasons.append("EMA bearish trend")
+        sell_reason.append("EMA bearish trend")
 
-    if rsi14 > 50:
+    if r > 50:
         buy_score += 15
-        buy_reasons.append("RSI bullish momentum")
-    if rsi14 < 50:
-        sell_score += 15
-        sell_reasons.append("RSI bearish momentum")
+        buy_reason.append("RSI bullish momentum")
 
-    if candle == "A_PLUS":
-        buy_score += 18
-        sell_score += 18
-        buy_reasons.append("A+ candle")
-        sell_reasons.append("A+ candle")
-    elif candle == "A_GRADE":
-        buy_score += 14
-        sell_score += 14
-        buy_reasons.append("A grade candle")
-        sell_reasons.append("A grade candle")
+    if r < 50:
+        sell_score += 15
+        sell_reason.append("RSI bearish momentum")
+
+    if candle in ["A_PLUS", "A_GRADE"]:
+        buy_score += 15
+        sell_score += 15
+        buy_reason.append(f"{candle} candle")
+        sell_reason.append(f"{candle} candle")
     elif candle == "B_GRADE":
         buy_score += 8
         sell_score += 8
-        buy_reasons.append("B grade candle")
-        sell_reasons.append("B grade candle")
+        buy_reason.append("B grade candle")
+        sell_reason.append("B grade candle")
 
-    if pattern in ["BULLISH_BREAKOUT", "BULLISH_CONTINUATION", "BULLISH_PRESSURE"]:
-        buy_score += 22
-        buy_reasons.append(pattern)
+    if candle_dir == "bullish":
+        buy_score += 12
+        buy_reason.append("bullish candle direction")
 
-    if pattern in ["BEARISH_BREAKDOWN", "BEARISH_CONTINUATION", "BEARISH_PRESSURE"]:
-        sell_score += 22
-        sell_reasons.append(pattern)
+    if candle_dir == "bearish":
+        sell_score += 12
+        sell_reason.append("bearish candle direction")
 
     if zone <= 0.35:
-        buy_score += 12
-        buy_reasons.append("price near support zone")
+        buy_score += 15
+        buy_reason.append("near support zone")
 
     if zone >= 0.65:
-        sell_score += 12
-        sell_reasons.append("price near resistance zone")
-
-    if retest:
-        if trend == "BULLISH":
-            buy_score += 8
-            buy_reasons.append(retest_reason)
-        else:
-            sell_score += 8
-            sell_reasons.append(retest_reason)
+        sell_score += 15
+        sell_reason.append("near resistance zone")
 
     if trap:
         buy_score -= 20
         sell_score -= 20
-        buy_reasons.append(trap_reason)
-        sell_reasons.append(trap_reason)
+        buy_reason.append(trap_reason)
+        sell_reason.append(trap_reason)
 
     if 0.47 < zone < 0.53:
-        buy_score -= 12
-        sell_score -= 12
-        buy_reasons.append("mid-range zone")
-        sell_reasons.append("mid-range zone")
+        buy_score -= 10
+        sell_score -= 10
+        buy_reason.append("mid-range zone")
+        sell_reason.append("mid-range zone")
 
-    atr_proxy = sum([highs[i] - lows[i] for i in range(-14, 0)]) / 14
-    atr_proxy = max(atr_proxy, range_size * 0.08)
+    atr = sum([highs[i] - lows[i] for i in range(-14, 0)]) / 14
+    atr = max(atr, range_size * 0.08)
 
     if buy_score >= MIN_CONFIDENCE and buy_score >= sell_score:
         entry = last
-        sl = entry - atr_proxy
+        sl = entry - atr
         tp = entry + (entry - sl) * 2
 
         return {
@@ -407,19 +298,17 @@ def riga_fx_logic(symbol, candles):
             "phase": phase,
             "level": "support" if zone <= 0.35 else "continuation",
             "momentum": "bullish",
-            "pattern": pattern,
-            "pattern_valid": pattern != "NO_PATTERN",
+            "pattern": "BULLISH_PRESSURE",
             "candle": candle,
             "candle_quality": round(strength, 2),
-            "retest": retest,
             "liquidity_trap": trap,
             "rr": "1:2",
-            "reason": ", ".join(buy_reasons)
+            "reason": ", ".join(buy_reason)
         }
 
     if sell_score >= MIN_CONFIDENCE and sell_score > buy_score:
         entry = last
-        sl = entry + atr_proxy
+        sl = entry + atr
         tp = entry - (sl - entry) * 2
 
         return {
@@ -433,14 +322,12 @@ def riga_fx_logic(symbol, candles):
             "phase": phase,
             "level": "resistance" if zone >= 0.65 else "continuation",
             "momentum": "bearish",
-            "pattern": pattern,
-            "pattern_valid": pattern != "NO_PATTERN",
+            "pattern": "BEARISH_PRESSURE",
             "candle": candle,
             "candle_quality": round(strength, 2),
-            "retest": retest,
             "liquidity_trap": trap,
             "rr": "1:2",
-            "reason": ", ".join(sell_reasons)
+            "reason": ", ".join(sell_reason)
         }
 
     return {
@@ -449,30 +336,32 @@ def riga_fx_logic(symbol, candles):
         "confidence": max(buy_score, sell_score),
         "trend": trend,
         "phase": phase,
-        "pattern": pattern,
+        "pattern": "NO_VALID_PATTERN",
         "candle": candle,
         "candle_quality": round(strength, 2),
-        "retest": retest,
         "liquidity_trap": trap,
-        "reason": "RIGA FX confirmations below threshold"
+        "reason": "confirmations below threshold"
     }
 
 
-def select_best_trade(results):
+def best_trade(results):
     trades = [
         r for r in results
         if r.get("type") in ["BUY", "SELL"] and r.get("confidence", 0) >= MIN_CONFIDENCE
     ]
+
     if not trades:
         return "NO TRADE"
+
     return sorted(trades, key=lambda x: x.get("confidence", 0), reverse=True)[0]
 
 
 @app.get("/")
 def root():
     return {
-        "status": "RIGA FX v7 FINAL LIVE",
-        "version": "7.2",
+        "status": "RIGA FX PRO LIVE",
+        "version": "1.0",
+        "pairs": PAIRS,
         "min_confidence": MIN_CONFIDENCE
     }
 
@@ -483,15 +372,15 @@ def health():
 
 
 @app.get("/fx-signal")
-def fx_signal(symbol: str = Query("EUR/USD")):
+def fx_signal(symbol: str = Query("XAU/USD")):
     try:
         source, candles = fetch_data(symbol)
-        result = riga_fx_logic(symbol, candles)
+        result = analyze(symbol, candles)
         result["data_source"] = source
         return result
     except Exception as e:
         return {
-            "market": normalize_symbol(symbol),
+            "market": norm(symbol),
             "signal": "NO TRADE",
             "confidence": 0,
             "reason": str(e)
@@ -500,26 +389,27 @@ def fx_signal(symbol: str = Query("EUR/USD")):
 
 @app.get("/fx-scan")
 def fx_scan(pairs: Optional[str] = Query(None)):
-    symbols = [normalize_symbol(x) for x in pairs.split(",")] if pairs else DEFAULT_PAIRS
+    symbols = [norm(x) for x in pairs.split(",")] if pairs else PAIRS
 
     results = []
-    for symbol in symbols:
+
+    for s in symbols:
         try:
-            source, candles = fetch_data(symbol)
-            result = riga_fx_logic(symbol, candles)
+            source, candles = fetch_data(s)
+            result = analyze(s, candles)
             result["data_source"] = source
             results.append(result)
         except Exception as e:
             results.append({
-                "market": normalize_symbol(symbol),
+                "market": norm(s),
                 "signal": "NO TRADE",
                 "confidence": 0,
                 "reason": str(e)
             })
 
     return {
-        "scan_type": "RIGA_FX_V7_FINAL",
+        "scan_type": "RIGA_FX_PRO",
         "total_scanned": len(results),
-        "best_trade": select_best_trade(results),
+        "best_trade": best_trade(results),
         "all_results": results
     }

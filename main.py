@@ -1,19 +1,15 @@
 import os
-import math
-from typing import Optional, Dict, Any, List
-
 import requests
+import yfinance as yf
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 
 load_dotenv()
 
-app = FastAPI(title="RIGA FX Twelve Data Backend", version="1.0.0")
+app = FastAPI(title="RIGA FX Backend (Twelve + Yahoo)", version="2.0.0")
 
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
-DEFAULT_INTERVAL = os.getenv("DEFAULT_INTERVAL", "5min")
-MIN_CONFIDENCE = int(os.getenv("MIN_CONFIDENCE", "70"))
-MIN_RR = float(os.getenv("MIN_RR", "1.5"))
+DEFAULT_INTERVAL = "5min"
 
 DEFAULT_PAIRS = [
     "EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD",
@@ -21,14 +17,22 @@ DEFAULT_PAIRS = [
     "XAU/USD","BTC/USD","ETH/USD"
 ]
 
-# ✅ AUTH DISABLED (IMPORTANT)
-def check_token(authorization: Optional[str]) -> None:
-    return
-
-
-def require_api_key() -> None:
-    if not TWELVEDATA_API_KEY:
-        raise HTTPException(status_code=500, detail="Missing TWELVEDATA_API_KEY")
+# Yahoo symbol mapping
+YAHOO_SYMBOLS = {
+    "XAU/USD": "GC=F",
+    "BTC/USD": "BTC-USD",
+    "ETH/USD": "ETH-USD",
+    "EUR/USD": "EURUSD=X",
+    "GBP/USD": "GBPUSD=X",
+    "USD/JPY": "JPY=X",
+    "USD/CHF": "CHF=X",
+    "AUD/USD": "AUDUSD=X",
+    "NZD/USD": "NZDUSD=X",
+    "USD/CAD": "CAD=X",
+    "EUR/JPY": "EURJPY=X",
+    "GBP/JPY": "GBPJPY=X",
+    "EUR/GBP": "EURGBP=X",
+}
 
 
 def normalize_symbol(symbol: str) -> str:
@@ -40,36 +44,82 @@ def normalize_symbol(symbol: str) -> str:
     return s
 
 
-def fetch_time_series(symbol: str, interval: str = DEFAULT_INTERVAL, outputsize: int = 120):
-    require_api_key()
-    url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": normalize_symbol(symbol),
-        "interval": interval,
-        "outputsize": outputsize,
-        "apikey": TWELVEDATA_API_KEY,
-    }
-    r = requests.get(url, params=params, timeout=20)
-    data = r.json()
+# ----------- FETCH FROM YAHOO -----------
+def fetch_yahoo(symbol: str):
+    yahoo_symbol = YAHOO_SYMBOLS.get(normalize_symbol(symbol))
 
-    if "values" not in data:
-        raise HTTPException(status_code=502, detail=data)
+    if not yahoo_symbol:
+        raise Exception(f"No Yahoo symbol for {symbol}")
 
-    return data
+    df = yf.download(
+        yahoo_symbol,
+        period="2d",
+        interval="5m",
+        progress=False
+    )
 
+    if df.empty:
+        raise Exception("Yahoo empty data")
 
-def candles_from_response(data):
     candles = []
-    for row in reversed(data["values"]):
+    for _, row in df.tail(120).iterrows():
         candles.append({
-            "open": float(row["open"]),
-            "high": float(row["high"]),
-            "low": float(row["low"]),
-            "close": float(row["close"]),
+            "open": float(row["Open"]),
+            "high": float(row["High"]),
+            "low": float(row["Low"]),
+            "close": float(row["Close"]),
         })
+
     return candles
 
 
+# ----------- FETCH WITH FALLBACK -----------
+def fetch_data(symbol: str):
+    # 1) Try TwelveData
+    try:
+        if not TWELVEDATA_API_KEY:
+            raise Exception("No API key")
+
+        url = "https://api.twelvedata.com/time_series"
+        params = {
+            "symbol": normalize_symbol(symbol),
+            "interval": DEFAULT_INTERVAL,
+            "outputsize": 120,
+            "apikey": TWELVEDATA_API_KEY,
+        }
+
+        r = requests.get(url, params=params, timeout=15)
+        data = r.json()
+
+        if r.status_code == 200 and "values" in data:
+            candles = []
+            for row in reversed(data["values"]):
+                candles.append({
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                })
+
+            return "TwelveData", candles
+
+        print("TwelveData failed:", data)
+
+    except Exception as e:
+        print("TwelveData error:", e)
+
+    # 2) Fallback Yahoo
+    try:
+        candles = fetch_yahoo(symbol)
+        return "Yahoo Finance", candles
+
+    except Exception as e:
+        print("Yahoo error:", e)
+
+    raise Exception("All data sources failed")
+
+
+# ----------- INDICATORS -----------
 def ema(values, period):
     if len(values) < period:
         return None
@@ -96,6 +146,7 @@ def rsi(values, period=14):
     return 100 - (100 / (1 + rs))
 
 
+# ----------- ANALYSIS -----------
 def analyze(symbol, candles):
     if len(candles) < 40:
         return {"market": symbol, "signal": "NO TRADE"}
@@ -110,6 +161,7 @@ def analyze(symbol, candles):
     if not e9 or not e21 or not r:
         return {"market": symbol, "signal": "NO TRADE"}
 
+    # BUY
     if e9 > e21 and r > 55:
         return {
             "market": symbol,
@@ -120,6 +172,7 @@ def analyze(symbol, candles):
             "confidence": 80
         }
 
+    # SELL
     if e9 < e21 and r < 45:
         return {
             "market": symbol,
@@ -133,9 +186,10 @@ def analyze(symbol, candles):
     return {"market": symbol, "signal": "NO TRADE"}
 
 
+# ----------- ROUTES -----------
 @app.get("/")
 def root():
-    return {"status": "running"}
+    return {"status": "RIGA FX running 🚀"}
 
 
 @app.get("/fx-scan")
@@ -144,10 +198,16 @@ def scan():
 
     for pair in DEFAULT_PAIRS:
         try:
-            data = fetch_time_series(pair)
-            candles = candles_from_response(data)
-            results.append(analyze(pair, candles))
+            source, candles = fetch_data(pair)
+            result = analyze(pair, candles)
+            result["data_source"] = source
+            results.append(result)
+
         except Exception as e:
-            results.append({"market": pair, "error": str(e)})
+            results.append({
+                "market": pair,
+                "signal": "NO TRADE",
+                "error": str(e)
+            })
 
     return results

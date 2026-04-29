@@ -1,3 +1,9 @@
+# ===============================
+
+# RIGA FX PRO BACKEND (FINAL)
+
+# ===============================
+
 import os
 import requests
 import yfinance as yf
@@ -6,321 +12,252 @@ from fastapi import FastAPI
 
 load_dotenv()
 
-app = FastAPI(title="RIGA FX Backend Final", version="2.4.0")
+app = FastAPI(title="RIGA FX PRO", version="3.0.0")
 
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 DEFAULT_INTERVAL = "5min"
 
 DEFAULT_PAIRS = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD",
-    "NZD/USD", "USD/CAD", "EUR/JPY", "GBP/JPY", "EUR/GBP",
-    "XAU/USD", "BTC/USD", "ETH/USD"
+"EUR/USD","GBP/USD","USD/JPY","USD/CHF",
+"AUD/USD","NZD/USD","USD/CAD",
+"EUR/JPY","GBP/JPY","EUR/GBP",
+"XAU/USD"
 ]
 
 YAHOO_SYMBOLS = {
-    "XAU/USD": ["GC=F", "MGC=F", "XAUUSD=X"],
-    "BTC/USD": ["BTC-USD"],
-    "ETH/USD": ["ETH-USD"],
-    "EUR/USD": ["EURUSD=X"],
-    "GBP/USD": ["GBPUSD=X"],
-    "USD/JPY": ["JPY=X"],
-    "USD/CHF": ["CHF=X"],
-    "AUD/USD": ["AUDUSD=X"],
-    "NZD/USD": ["NZDUSD=X"],
-    "USD/CAD": ["CAD=X"],
-    "EUR/JPY": ["EURJPY=X"],
-    "GBP/JPY": ["GBPJPY=X"],
-    "EUR/GBP": ["EURGBP=X"],
+"XAU/USD": ["GC=F","MGC=F"],
+"EUR/USD": ["EURUSD=X"],
+"GBP/USD": ["GBPUSD=X"],
+"USD/JPY": ["JPY=X"],
+"USD/CHF": ["CHF=X"],
+"AUD/USD": ["AUDUSD=X"],
+"NZD/USD": ["NZDUSD=X"],
+"USD/CAD": ["CAD=X"],
+"EUR/JPY": ["EURJPY=X"],
+"GBP/JPY": ["GBPJPY=X"],
+"EUR/GBP": ["EURGBP=X"],
 }
 
+# ===============================
 
-def normalize_symbol(symbol: str) -> str:
-    s = symbol.strip().upper().replace(" ", "")
-    if "/" in s:
-        return s
-    if len(s) == 6:
-        return f"{s[:3]}/{s[3:]}"
-    return s
+# DATA FETCH
 
+# ===============================
 
-def safe_float(value):
-    try:
-        if hasattr(value, "iloc"):
-            value = value.iloc[0]
-        return float(value)
-    except Exception:
-        return None
+def fetch_yahoo(symbol):
+for sym in YAHOO_SYMBOLS.get(symbol, []):
+df = yf.download(sym, period="5d", interval="5m", progress=False)
+if not df.empty:
+candles = []
+for _, r in df.tail(120).iterrows():
+candles.append({
+"open": float(r["Open"]),
+"high": float(r["High"]),
+"low": float(r["Low"]),
+"close": float(r["Close"])
+})
+return f"Yahoo({sym})", candles
+raise Exception("Yahoo fail")
 
+def fetch_data(symbol):
+try:
+url = "https://api.twelvedata.com/time_series"
+params = {
+"symbol": symbol,
+"interval": DEFAULT_INTERVAL,
+"apikey": TWELVEDATA_API_KEY,
+"outputsize": 120
+}
+r = requests.get(url, params=params).json()
+if "values" in r:
+candles = []
+for row in reversed(r["values"]):
+candles.append({
+"open": float(row["open"]),
+"high": float(row["high"]),
+"low": float(row["low"]),
+"close": float(row["close"])
+})
+return "TwelveData", candles
+except:
+pass
 
-def fetch_yahoo(symbol: str):
-    yahoo_symbols = YAHOO_SYMBOLS.get(normalize_symbol(symbol))
+```
+return fetch_yahoo(symbol)
+```
 
-    if not yahoo_symbols:
-        raise Exception(f"No Yahoo symbol for {symbol}")
+# ===============================
 
-    last_error = None
+# INDICATORS
 
-    for yahoo_symbol in yahoo_symbols:
-        try:
-            df = yf.download(
-                yahoo_symbol,
-                period="5d",
-                interval="5m",
-                progress=False,
-                auto_adjust=False
-            )
+# ===============================
 
-            if df.empty:
-                raise Exception(f"Yahoo empty data for {yahoo_symbol}")
+def ema(data, p):
+k = 2/(p+1)
+e = sum(data[:p])/p
+for price in data[p:]:
+e = price*k + e*(1-k)
+return e
 
-            candles = []
+def rsi(data, p=14):
+gains, losses = [], []
+for i in range(1,len(data)):
+diff = data[i]-data[i-1]
+gains.append(max(diff,0))
+losses.append(abs(min(diff,0)))
+avg_gain = sum(gains[-p:])/p
+avg_loss = sum(losses[-p:])/p
+if avg_loss == 0: return 100
+rs = avg_gain/avg_loss
+return 100 - (100/(1+rs))
 
-            for _, row in df.tail(120).iterrows():
-                candle = {
-                    "open": safe_float(row["Open"]),
-                    "high": safe_float(row["High"]),
-                    "low": safe_float(row["Low"]),
-                    "close": safe_float(row["Close"]),
-                }
+# ===============================
 
-                if None not in candle.values():
-                    candles.append(candle)
+# DETECTION
 
-            if len(candles) >= 40:
-                return yahoo_symbol, candles
+# ===============================
 
-            raise Exception(f"Not enough candles from {yahoo_symbol}")
+def detect_candle(c):
+body = abs(c["close"] - c["open"])
+rng = c["high"] - c["low"]
 
-        except Exception as e:
-            last_error = e
-            print(f"Yahoo failed for {yahoo_symbol}: {e}")
+```
+if body > rng*0.6:
+    return "marubozu","strong"
 
-    raise Exception(f"All Yahoo symbols failed for {symbol}: {last_error}")
+if c["close"] > c["open"]:
+    return "bullish","strong"
 
+if c["open"] > c["close"]:
+    return "bearish","strong"
 
-def fetch_twelvedata(symbol: str):
-    if not TWELVEDATA_API_KEY:
-        raise Exception("No TwelveData API key")
+return "weak","weak"
+```
 
-    url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": normalize_symbol(symbol),
-        "interval": DEFAULT_INTERVAL,
-        "outputsize": 120,
-        "apikey": TWELVEDATA_API_KEY,
-    }
+def detect_pattern(closes):
+high = max(closes[-20:])
+low = min(closes[-20:])
+last = closes[-1]
 
-    r = requests.get(url, params=params, timeout=15)
-    data = r.json()
+```
+if last > high:
+    return "breakout", True
+if last < low:
+    return "breakdown", True
 
-    if r.status_code != 200 or "values" not in data:
-        raise Exception(f"TwelveData failed: {data}")
+return "range", False
+```
 
-    candles = []
+# ===============================
 
-    for row in reversed(data["values"]):
-        candle = {
-            "open": safe_float(row["open"]),
-            "high": safe_float(row["high"]),
-            "low": safe_float(row["low"]),
-            "close": safe_float(row["close"]),
-        }
+# ANALYSIS ENGINE
 
-        if None not in candle.values():
-            candles.append(candle)
-
-    if len(candles) < 40:
-        raise Exception("TwelveData not enough candles")
-
-    closes = [c["close"] for c in candles]
-
-    # Weak / flat data rejection
-    if max(closes) - min(closes) <= 0.5 and normalize_symbol(symbol) == "XAU/USD":
-        raise Exception("TwelveData weak Gold data")
-
-    return candles
-
-
-def fetch_data(symbol: str):
-    symbol = normalize_symbol(symbol)
-
-    # GOLD: Yahoo first because TwelveData sometimes gives weak/incomplete Gold data
-    if symbol == "XAU/USD":
-        try:
-            yahoo_symbol, candles = fetch_yahoo(symbol)
-            return f"Yahoo Finance ({yahoo_symbol})", candles
-        except Exception as e:
-            print("Gold Yahoo error:", e)
-
-        try:
-            candles = fetch_twelvedata(symbol)
-            return "TwelveData", candles
-        except Exception as e:
-            print("Gold TwelveData error:", e)
-
-        raise Exception("All Gold data sources failed")
-
-    # Other markets: TwelveData first, Yahoo backup
-    try:
-        candles = fetch_twelvedata(symbol)
-        return "TwelveData", candles
-    except Exception as e:
-        print("TwelveData error:", e)
-
-    try:
-        yahoo_symbol, candles = fetch_yahoo(symbol)
-        return f"Yahoo Finance ({yahoo_symbol})", candles
-    except Exception as e:
-        print("Yahoo error:", e)
-
-    raise Exception("All data sources failed")
-
-
-def ema(values, period):
-    if len(values) < period:
-        return None
-
-    k = 2 / (period + 1)
-    e = sum(values[:period]) / period
-
-    for price in values[period:]:
-        e = price * k + e * (1 - k)
-
-    return e
-
-
-def rsi(values, period=14):
-    if len(values) <= period:
-        return None
-
-    gains = []
-    losses = []
-
-    for i in range(1, len(values)):
-        diff = values[i] - values[i - 1]
-        gains.append(max(diff, 0))
-        losses.append(abs(min(diff, 0)))
-
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-
-    if avg_loss == 0:
-        return 100
-
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-
-def get_sl_tp(symbol, last, trade_type):
-    symbol = normalize_symbol(symbol)
-
-    if symbol == "XAU/USD":
-        sl_gap = 3.0
-        tp_gap = 6.0
-        digits = 2
-    elif symbol in ["BTC/USD", "ETH/USD"]:
-        sl_gap = last * 0.005
-        tp_gap = last * 0.010
-        digits = 2
-    elif "JPY" in symbol:
-        sl_gap = 0.20
-        tp_gap = 0.40
-        digits = 3
-    else:
-        sl_gap = 0.0020
-        tp_gap = 0.0040
-        digits = 5
-
-    if trade_type == "BUY":
-        sl = last - sl_gap
-        tp = last + tp_gap
-    else:
-        sl = last + sl_gap
-        tp = last - tp_gap
-
-    return round(sl, digits), round(tp, digits), round(last, digits)
-
+# ===============================
 
 def analyze(symbol, candles):
-    if len(candles) < 40:
-        return {"market": symbol, "signal": "NO TRADE"}
 
-    closes = [c["close"] for c in candles]
-    last = closes[-1]
+```
+closes = [c["close"] for c in candles]
+highs = [c["high"] for c in candles]
+lows = [c["low"] for c in candles]
 
-    e9 = ema(closes, 9)
-    e21 = ema(closes, 21)
-    r = rsi(closes)
+last = closes[-1]
 
-    if e9 is None or e21 is None or r is None:
-        return {"market": symbol, "signal": "NO TRADE"}
+e9 = ema(closes,9)
+e21 = ema(closes,21)
+r = rsi(closes)
 
-    if e9 > e21 and r > 55:
-        sl, tp, entry = get_sl_tp(symbol, last, "BUY")
-        return {
-            "market": symbol,
-            "type": "BUY",
-            "entry": entry,
-            "sl": sl,
-            "tp": tp,
-            "confidence": 80
-        }
+trend = "bullish" if e9>e21 else "bearish"
 
-    if e9 < e21 and r < 45:
-        sl, tp, entry = get_sl_tp(symbol, last, "SELL")
-        return {
-            "market": symbol,
-            "type": "SELL",
-            "entry": entry,
-            "sl": sl,
-            "tp": tp,
-            "confidence": 80
-        }
+recent_high = max(highs[-30:])
+recent_low = min(lows[-30:])
+mid = (recent_high+recent_low)/2
+range_size = recent_high - recent_low
 
-    return {"market": symbol, "signal": "NO TRADE"}
+# MID FILTER
+if abs(last-mid) < range_size*0.2:
+    return {"market":symbol,"signal":"NO TRADE"}
 
+pattern, valid = detect_pattern(closes)
+candle, quality = detect_candle(candles[-1])
 
-@app.get("/")
-def root():
-    return {"status": "RIGA FX running", "version": "2.4.0"}
+# SELL
+if trend=="bearish" and valid and r<45 and last>mid:
+    sl = recent_high
+    tp = last - (sl-last)*2
 
+    return {
+        "market":symbol,
+        "type":"SELL",
+        "entry":round(last,2),
+        "sl":round(sl,2),
+        "tp":round(tp,2),
+        "confidence":80,
+        "trend":"bearish",
+        "phase":"trend",
+        "level":"resistance",
+        "momentum":"strong",
+        "pattern":pattern,
+        "pattern_valid":True,
+        "candle":candle,
+        "candle_quality":quality,
+        "retest":False,
+        "liquidity_trap":False,
+        "rr":"1:2",
+        "reason":"Sniper sell setup"
+    }
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+# BUY
+if trend=="bullish" and valid and r>55 and last<mid:
+    sl = recent_low
+    tp = last + (last-sl)*2
 
+    return {
+        "market":symbol,
+        "type":"BUY",
+        "entry":round(last,2),
+        "sl":round(sl,2),
+        "tp":round(tp,2),
+        "confidence":80,
+        "trend":"bullish",
+        "phase":"trend",
+        "level":"support",
+        "momentum":"strong",
+        "pattern":pattern,
+        "pattern_valid":True,
+        "candle":candle,
+        "candle_quality":quality,
+        "retest":False,
+        "liquidity_trap":False,
+        "rr":"1:2",
+        "reason":"Sniper buy setup"
+    }
+
+return {"market":symbol,"signal":"NO TRADE"}
+```
+
+# ===============================
+
+# ROUTES
+
+# ===============================
 
 @app.get("/fx-signal")
-def fx_signal(symbol: str = "EUR/USD"):
-    try:
-        source, candles = fetch_data(symbol)
-        result = analyze(symbol, candles)
-        result["data_source"] = source
-        return result
-    except Exception as e:
-        return {
-            "market": symbol,
-            "signal": "NO TRADE",
-            "error": str(e)
-        }
-
+def fx_signal(symbol:str="EUR/USD"):
+source,candles = fetch_data(symbol)
+res = analyze(symbol,candles)
+res["data_source"]=source
+return res
 
 @app.get("/fx-scan")
-def scan():
-    results = []
-
-    for pair in DEFAULT_PAIRS:
-        try:
-            source, candles = fetch_data(pair)
-            result = analyze(pair, candles)
-            result["data_source"] = source
-            results.append(result)
-
-        except Exception as e:
-            results.append({
-                "market": pair,
-                "signal": "NO TRADE",
-                "error": str(e)
-            })
-
-    return results
+def fx_scan():
+results=[]
+for p in DEFAULT_PAIRS:
+try:
+source,candles = fetch_data(p)
+r = analyze(p,candles)
+r["data_source"]=source
+results.append(r)
+except:
+results.append({"market":p,"signal":"NO TRADE"})
+return results

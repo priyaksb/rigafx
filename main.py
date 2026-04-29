@@ -6,7 +6,7 @@ from fastapi import FastAPI
 
 load_dotenv()
 
-app = FastAPI(title="RIGA FX Backend (Twelve + Yahoo)", version="2.2.0")
+app = FastAPI(title="RIGA FX Backend (Twelve + Yahoo Gold Backup)", version="2.3.0")
 
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 DEFAULT_INTERVAL = "5min"
@@ -18,19 +18,19 @@ DEFAULT_PAIRS = [
 ]
 
 YAHOO_SYMBOLS = {
-    "XAU/USD": "GC=F",
-    "BTC/USD": "BTC-USD",
-    "ETH/USD": "ETH-USD",
-    "EUR/USD": "EURUSD=X",
-    "GBP/USD": "GBPUSD=X",
-    "USD/JPY": "JPY=X",
-    "USD/CHF": "CHF=X",
-    "AUD/USD": "AUDUSD=X",
-    "NZD/USD": "NZDUSD=X",
-    "USD/CAD": "CAD=X",
-    "EUR/JPY": "EURJPY=X",
-    "GBP/JPY": "GBPJPY=X",
-    "EUR/GBP": "EURGBP=X",
+    "XAU/USD": ["GC=F", "XAUUSD=X"],
+    "BTC/USD": ["BTC-USD"],
+    "ETH/USD": ["ETH-USD"],
+    "EUR/USD": ["EURUSD=X"],
+    "GBP/USD": ["GBPUSD=X"],
+    "USD/JPY": ["JPY=X"],
+    "USD/CHF": ["CHF=X"],
+    "AUD/USD": ["AUDUSD=X"],
+    "NZD/USD": ["NZDUSD=X"],
+    "USD/CAD": ["CAD=X"],
+    "EUR/JPY": ["EURJPY=X"],
+    "GBP/JPY": ["GBPJPY=X"],
+    "EUR/GBP": ["EURGBP=X"],
 }
 
 
@@ -53,39 +53,49 @@ def safe_float(value):
 
 
 def fetch_yahoo(symbol: str):
-    yahoo_symbol = YAHOO_SYMBOLS.get(normalize_symbol(symbol))
+    yahoo_symbols = YAHOO_SYMBOLS.get(normalize_symbol(symbol))
 
-    if not yahoo_symbol:
+    if not yahoo_symbols:
         raise Exception(f"No Yahoo symbol for {symbol}")
 
-    df = yf.download(
-        yahoo_symbol,
-        period="2d",
-        interval="5m",
-        progress=False,
-        auto_adjust=False
-    )
+    last_error = None
 
-    if df.empty:
-        raise Exception(f"Yahoo empty data for {symbol}")
+    for yahoo_symbol in yahoo_symbols:
+        try:
+            df = yf.download(
+                yahoo_symbol,
+                period="5d",
+                interval="5m",
+                progress=False,
+                auto_adjust=False
+            )
 
-    candles = []
+            if df.empty:
+                raise Exception(f"Yahoo empty data for {yahoo_symbol}")
 
-    for _, row in df.tail(120).iterrows():
-        candle = {
-            "open": safe_float(row["Open"]),
-            "high": safe_float(row["High"]),
-            "low": safe_float(row["Low"]),
-            "close": safe_float(row["Close"]),
-        }
+            candles = []
 
-        if None not in candle.values():
-            candles.append(candle)
+            for _, row in df.tail(120).iterrows():
+                candle = {
+                    "open": safe_float(row["Open"]),
+                    "high": safe_float(row["High"]),
+                    "low": safe_float(row["Low"]),
+                    "close": safe_float(row["Close"]),
+                }
 
-    if len(candles) < 40:
-        raise Exception(f"Yahoo not enough candle data for {symbol}")
+                if None not in candle.values():
+                    candles.append(candle)
 
-    return candles
+            if len(candles) >= 40:
+                return yahoo_symbol, candles
+
+            raise Exception(f"Not enough candles from {yahoo_symbol}")
+
+        except Exception as e:
+            last_error = e
+            print(f"Yahoo failed for {yahoo_symbol}:", e)
+
+    raise Exception(f"All Yahoo symbols failed for {symbol}: {last_error}")
 
 
 def fetch_data(symbol: str):
@@ -127,8 +137,8 @@ def fetch_data(symbol: str):
         print("TwelveData error:", e)
 
     try:
-        candles = fetch_yahoo(symbol)
-        return "Yahoo Finance", candles
+        yahoo_symbol, candles = fetch_yahoo(symbol)
+        return f"Yahoo Finance ({yahoo_symbol})", candles
 
     except Exception as e:
         print("Yahoo error:", e)
@@ -242,7 +252,7 @@ def analyze(symbol, candles):
 
 @app.get("/")
 def root():
-    return {"status": "RIGA FX running", "version": "2.2.0"}
+    return {"status": "RIGA FX running", "version": "2.3.0"}
 
 
 @app.get("/health")

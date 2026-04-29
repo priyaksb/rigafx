@@ -6,7 +6,7 @@ from fastapi import FastAPI
 
 load_dotenv()
 
-app = FastAPI(title="RIGA FX Backend (Twelve + Yahoo)", version="2.1.0")
+app = FastAPI(title="RIGA FX Backend (Twelve + Yahoo)", version="2.2.0")
 
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 DEFAULT_INTERVAL = "5min"
@@ -242,12 +242,27 @@ def analyze(symbol, candles):
 
 @app.get("/")
 def root():
-    return {"status": "RIGA FX running", "version": "2.1.0"}
+    return {"status": "RIGA FX running", "version": "2.2.0"}
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/fx-signal")
+def fx_signal(symbol: str = "EUR/USD"):
+    try:
+        source, candles = fetch_data(symbol)
+        result = analyze(symbol, candles)
+        result["data_source"] = source
+        return result
+    except Exception as e:
+        return {
+            "market": symbol,
+            "signal": "NO TRADE",
+            "error": str(e)
+        }
 
 
 @app.get("/fx-scan")
